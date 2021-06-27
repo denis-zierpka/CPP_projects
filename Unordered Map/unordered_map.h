@@ -394,7 +394,7 @@ public:
 
     using AllocTraits = std::allocator_traits<NAlloc>;
     NAlloc n_allocator;
-    List<NodeType*, typename Alloc::template rebind<NodeType*>::other> body;
+    List<NodeType*, typename Alloc::template rebind<NodeType*>::other> elements;
     Hash hashfn;
     Equal equalfn;
     std::vector<list_iter> hash_table;
@@ -404,17 +404,17 @@ public:
     float max_load_factor_value = 0.75;
 
     UnorderedMap() {
-        hash_table.resize(resize_value, body.end());
-        save_last_hash.resize(resize_value, body.end());
+        hash_table.resize(resize_value, elements.end());
+        save_last_hash.resize(resize_value, elements.end());
     }
 
     explicit UnorderedMap(const Alloc& alloc): n_allocator(alloc) {
-        hash_table.resize(resize_value, body.end());
-        save_last_hash.resize(resize_value, body.end());
+        hash_table.resize(resize_value, elements.end());
+        save_last_hash.resize(resize_value, elements.end());
     }
 
     void move_from_other(UnorderedMap&& other) {
-        body = std::move(other.body);
+        elements = std::move(other.elements);
         hashfn = std::move(other.hashfn);
         equalfn = std::move(other.equalfn);
         hash_table = std::move(other.hash_table);
@@ -429,9 +429,9 @@ public:
     UnorderedMap(const UnorderedMap& other) {
         n_allocator = AllocTraits::select_on_container_copy_construction(other.n_allocator);
         get_from_other(other);
-        hash_table.resize(resize_value, body.end());
-        save_last_hash.resize(resize_value, body.end());
-        for (auto ptr : other) {
+        hash_table.resize(resize_value, elements.end());
+        save_last_hash.resize(resize_value, elements.end());
+        for (auto& ptr : other) {
             insert(ptr);
         }
     }
@@ -447,9 +447,9 @@ public:
         n_allocator = other.n_allocator;
         get_from_other(other);
 
-        hash_table.resize(resize_value, body.end());
-        save_last_hash.resize(resize_value, body.end());
-        for (auto ptr : other) {
+        hash_table.resize(resize_value, elements.end());
+        save_last_hash.resize(resize_value, elements.end());
+        for (auto& ptr : other) {
             insert(ptr);
         }
         return *this;
@@ -472,42 +472,43 @@ public:
     }
 
     size_t size() const {
-        return body.size();
+        return elements.size();
     }
 
     Iterator begin() {
-        return static_cast<Iterator>(body.begin());
+        return static_cast<Iterator>(elements.begin());
     }
 
     ConstIterator begin() const {
-        return static_cast<ConstIterator>(body.cbegin());
+        return static_cast<ConstIterator>(elements.cbegin());
     }
 
     ConstIterator cbegin() const {
-        return static_cast<ConstIterator>(body.cbegin());
+        return static_cast<ConstIterator>(elements.cbegin());
     }
 
     Iterator end() {
-        return static_cast<Iterator>(body.end());
+        return static_cast<Iterator>(elements.end());
     }
 
     ConstIterator end() const {
-        return static_cast<ConstIterator>(body.cend());
+        return static_cast<ConstIterator>(elements.cend());
     }
 
     ConstIterator cend() const {
-        return static_cast<ConstIterator>(body.cend());
+        return static_cast<ConstIterator>(elements.cend());
     }
 
     size_t max_size() const noexcept {
         return std::numeric_limits<size_t>::max();
     }
 
-    Iterator find(const Key& key) {
-        size_t pos = bucket_pos(key);
+    Iterator find(const Key& key, size_t pos = 0, bool pos_calculated = false) {
+        if (!pos_calculated)
+            pos = bucket_pos(key);
         list_iter ptr = hash_table[pos];
 
-        while (ptr != body.end()) {
+        while (ptr != elements.end()) {
             if (equalfn((*ptr)->first, key)) {
                 return static_cast<Iterator>(ptr);
             }
@@ -520,7 +521,7 @@ public:
     }
 
     float load_factor() const {
-        return static_cast<float>(body.size()) / hash_table.size();
+        return static_cast<float>(elements.size()) / hash_table.size();
     }
 
     void max_load_factor(float value) {
@@ -546,17 +547,17 @@ public:
     void rehash(size_t count) {
         hash_table.clear();
         save_last_hash.clear();
-        auto save = std::move(body);
-        hash_table.resize(count, body.end());
-        save_last_hash.resize(count, body.end());
+        auto save = std::move(elements);
+        hash_table.resize(count, elements.end());
+        save_last_hash.resize(count, elements.end());
         for (list_iter i = save.begin(); i != save.end(); ++i) {
             list_iter& elem = hash_table[bucket_pos((*i)->first)];
             bool update_last = false;
-            if (elem == body.end()) {
+            if (elem == elements.end()) {
                 update_last = true;
             }
 
-            elem = body.insert(elem, *i);
+            elem = elements.insert(elem, *i);
             if (update_last) {
                 save_last_hash[bucket_pos((*i)->first)] = elem;
             }
@@ -576,11 +577,11 @@ public:
         check_load_factor();
         size_t save_bucket_pos = bucket_pos(ptr->first);
         list_iter save = hash_table[save_bucket_pos];
-        list_iter ans = body.insert(save, ptr);
+        list_iter ans = elements.insert(save, ptr);
 
-        if (body.end() == save) {
+        if (elements.end() == save) {
             hash_table[save_bucket_pos] = ans;
-            save_last_hash[save_bucket_pos] = ans;  //TODO
+            save_last_hash[save_bucket_pos] = ans;
 
         }
         return {static_cast<Iterator>(ans), true};
@@ -606,26 +607,19 @@ public:
         }
     }
 
+
     size_t erase(const Key& key) {
-        Iterator ptr = find(key);
-        if (ptr == body.end()) {
+        std::pair<Iterator, size_t> ptr = r_find(key);
+        if (ptr.first == elements.end()) {
             return 0;
         }
-        erase(ptr);
+        r_erase(ptr.first, ptr.second, true);
         return 1;
     }
 
+
     Iterator erase(ConstIterator ptr) {
-        size_t hash = bucket_pos(ptr->first);
-        auto del = body.erase(ptr.ptr);
-        if (static_cast<ConstIterator>(hash_table[hash]) == ptr) {
-            if (del != body.end() && bucket_pos((*del)->first) == hash)
-                hash_table[hash] = del;
-            else
-                hash_table[hash] = body.end();
-            return static_cast<Iterator>(del);
-        }
-        return static_cast<Iterator>(del);
+        return r_erase(ptr);
     }
 
     Iterator erase(ConstIterator first, ConstIterator last) {
@@ -654,8 +648,30 @@ public:
     }
 
     ~UnorderedMap() {
-        for (list_const_iter ptr = body.begin(); ptr != body.end(); ++ptr) {
+        for (list_const_iter ptr = elements.begin(); ptr != elements.end(); ++ptr) {
             delete *ptr;
         }
     }
+
+private:
+    std::pair<Iterator, size_t> r_find(const Key& key) {
+        size_t save_bucket_pos = bucket_pos(key);
+        return {find(key, save_bucket_pos, true), save_bucket_pos};
+    }
+
+    Iterator r_erase(ConstIterator ptr, size_t hash = 0, bool hash_calculated = false) {
+        if (!hash_calculated)
+            hash = bucket_pos(ptr->first);
+        auto del = elements.erase(ptr.ptr);
+        if (static_cast<ConstIterator>(hash_table[hash]) == ptr) {
+            if (del != elements.end() && bucket_pos((*del)->first) == hash)
+                hash_table[hash] = del;
+            else
+                hash_table[hash] = elements.end();
+            return static_cast<Iterator>(del);
+        }
+        return static_cast<Iterator>(del);
+    }
+
 };
+
